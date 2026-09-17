@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+
+          <!-- Branch coverage is the point. The constitution requires 95% line AND branch on
+               money arithmetic; a line-only tool silently passes a rule whose branches are
+               never exercised. -->
+          <UseSourceLink>false</UseSourceLink>
+          <SkipAutoProps>true</SkipAutoProps>
+          <DeterministicReport>true</DeterministicReport>
+
+          <!-- Excluded from the denominator because they carry no logic to get wrong.
+               Everything with a decision in it stays in. -->
+          <Exclude>[MoeezMobile.Api]MoeezMobile.Api.Models.Dtos.*,[MoeezMobile.Api]MoeezMobile.Api.Models.Entities.*,[MoeezMobile.Api]Program</Exclude>
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute</ExcludeByAttribute>
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
+
+<!--
+  Thresholds are NOT declared here. Coverlet's msbuild threshold applies one number to the
+  whole assembly, which is exactly the averaging the constitution's two-number rule forbids:
+  fully covered DTOs would mask a 40%-covered profit calculation.
+
+  They are enforced per-namespace in CI instead (task T107), as two separate gates:
+    80% line, solution-wide
+    95% line AND branch for MoeezMobile.Api.Domain.* and MoeezMobile.Api.Services.*
+
+  Local report (see quickstart.md for the exact commands):
+    dotnet test with the "settings" switch pointing at this file, then reportgenerator over
+    the emitted coverage.cobertura.xml files.
+-->
