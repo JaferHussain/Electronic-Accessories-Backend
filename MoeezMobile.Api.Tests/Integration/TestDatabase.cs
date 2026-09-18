@@ -1,15 +1,15 @@
 using System.Text.RegularExpressions;
-using MySqlConnector;
+using Microsoft.Data.SqlClient;
 
 namespace MoeezMobile.Api.Tests.Integration;
 
 /// <summary>
 /// Resolves and provisions the duplicate database every test runs against.
 ///
-/// Tests run against a real MySQL schema rather than in-memory substitutes, so that what the
-/// suite proves is what MySQL actually does: row locking, utf8mb4 collation,
-/// ON DUPLICATE KEY behaviour, DECIMAL(18,2) rounding on write, and transaction rollback.
-/// An in-memory stand-in agrees with none of those.
+/// Tests run against a real SQL Server schema rather than in-memory substitutes, so that what
+/// the suite proves is what SQL Server actually does: row locking, NVARCHAR collation,
+/// UPDATE-then-INSERT upsert behaviour, DECIMAL(18,2) rounding on write, and transaction
+/// rollback. An in-memory stand-in agrees with none of those.
 ///
 /// The schema is applied from db/schema.sql — the same file production uses — so test and
 /// production schemas cannot drift.
@@ -20,16 +20,20 @@ public static class TestDatabase
     public const string ConnectionEnvVar = "MOEEZ_TEST_CONNECTION";
 
     private const string DefaultConnection =
-        "Server=localhost;Port=3306;Database=moeez_test;User ID=root;Password=;"
-        + "CharSet=utf8mb4;AllowUserVariables=True;ConvertZeroDateTime=True;TreatTinyAsBoolean=False;";
+        "Server=.\\MSSQLSERVER2012;Database=moeez_test;Integrated Security=True;"
+        + "TrustServerCertificate=True";
 
     /// <summary>
-    /// A schema is only usable as a test target if its name says so. The shop's live
-    /// database sits on this same MySQL server, and a truncating test suite pointed at it
-    /// would empty the shop's ledger. This pattern is the thing standing between the two.
+    /// A database is only usable as a test target if its name says so. The shop's live
+    /// database sits on this same SQL Server instance, and a truncating test suite pointed at
+    /// it would empty the shop's ledger. This pattern is the thing standing between the two.
+    ///
+    /// The live database is asynctxc_ElectronicAcces; note that 'asynctxc_ElectronicAcces_test'
+    /// is accepted while the live name itself is not, so a test database may sit beside it.
     /// </summary>
-    private static readonly Regex AllowedSchemaName =
-        new(@"^moeez_test(_[a-z0-9]+)?$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex AllowedDatabaseName =
+        new(@"^(moeez_test(_[a-z0-9]+)?|asynctxc_ElectronicAcces_test(_[a-z0-9]+)?)$",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly SemaphoreSlim ProvisionLock = new(1, 1);
     private static bool _provisioned;
@@ -41,8 +45,8 @@ public static class TestDatabase
     ///
     /// Deliberately a value rather than an exception thrown from a static constructor: a
     /// throwing initializer surfaces as TypeInitializationException wrapped inside whatever
-    /// catch happens to see it first, and the real reason gets reported as "MySQL is not
-    /// reachable". Someone pointed at the wrong schema would then go restart a healthy
+    /// catch happens to see it first, and the real reason gets reported as "SQL Server is not
+    /// reachable". Someone pointed at the wrong database would then go restart a healthy
     /// server instead of learning what they actually did wrong.
     /// </summary>
     public static string? RejectionReason => Guarded.Rejection;
@@ -51,11 +55,11 @@ public static class TestDatabase
     public static string ConnectionString =>
         Guarded.Resolved ?? throw new InvalidOperationException(Guarded.Rejection);
 
-    /// <summary>Schema name in use, for diagnostics and assertions.</summary>
+    /// <summary>Database name in use, for diagnostics and assertions.</summary>
     public static string SchemaName =>
         Guarded.Resolved is null
             ? "<refused>"
-            : new MySqlConnectionStringBuilder(Guarded.Resolved).Database;
+            : new SqlConnectionStringBuilder(Guarded.Resolved).InitialCatalog;
 
     private static (string?, string?) ResolveAndGuard()
     {
@@ -72,41 +76,36 @@ public static class TestDatabase
     /// </summary>
     public static string? Reject(string connectionString)
     {
-        MySqlConnectionStringBuilder builder;
+        SqlConnectionStringBuilder builder;
         try
         {
-            builder = new MySqlConnectionStringBuilder(connectionString);
+            builder = new SqlConnectionStringBuilder(connectionString);
         }
         catch (Exception ex)
         {
             return $"REFUSED — the test connection string could not be parsed: {ex.Message}";
         }
 
-        var database = builder.Database;
+        var database = builder.InitialCatalog;
 
         if (string.IsNullOrWhiteSpace(database))
             return $"REFUSED — the {ConnectionEnvVar} connection string names no database. "
-                   + "A suite without an explicit schema could truncate the wrong one.";
+                   + "A suite without an explicit database could truncate the wrong one.";
 
-        if (!AllowedSchemaName.IsMatch(database))
-            return $"REFUSED — will not run against schema '{database}'. This suite truncates "
-                   + "every table between tests, and the shop's live database (moeez_mobile) is on "
-                   + "this same server. Only 'moeez_test' or 'moeez_test_<suffix>' is accepted. "
-                   + $"This is a configuration mistake, not an unreachable server — set "
-                   + $"{ConnectionEnvVar} to a duplicate database.";
-
-        // utf8mb4 end to end, or the Urdu round-trip tests would prove nothing.
-        if (!string.Equals(builder.CharacterSet, "utf8mb4", StringComparison.OrdinalIgnoreCase))
-            return $"REFUSED — the test connection must use CharSet=utf8mb4 (found "
-                   + $"'{builder.CharacterSet}'). Anything else silently mangles Urdu text and "
-                   + "hides the defects these tests exist to catch.";
+        if (!AllowedDatabaseName.IsMatch(database))
+            return $"REFUSED — will not run against database '{database}'. This suite deletes "
+                   + "every row between tests, and the shop's live database "
+                   + "(asynctxc_ElectronicAcces) is on this same server. Only 'moeez_test', "
+                   + "'asynctxc_ElectronicAcces_test' or a '_<suffix>' variant of either is "
+                   + $"accepted. This is a configuration mistake, not an unreachable server — "
+                   + $"set {ConnectionEnvVar} to a duplicate database.";
 
         return null;
     }
 
     /// <summary>
-    /// True when the MySQL server is reachable. When it is not, the integration tier skips
-    /// loudly rather than failing the build for a missing local prerequisite — and never
+    /// True when the SQL Server instance is reachable. When it is not, the integration tier
+    /// skips loudly rather than failing the build for a missing local prerequisite — and never
     /// passes silently.
     /// </summary>
     public static async Task<(bool Available, string? Reason)> ProbeAsync()
@@ -116,24 +115,24 @@ public static class TestDatabase
 
         try
         {
-            var builder = new MySqlConnectionStringBuilder(ConnectionString)
+            var builder = new SqlConnectionStringBuilder(ConnectionString)
             {
-                Database = string.Empty,
-                ConnectionTimeout = 5
+                InitialCatalog = "master",
+                ConnectTimeout = 5
             };
 
-            await using var conn = new MySqlConnection(builder.ConnectionString);
+            await using var conn = new SqlConnection(builder.ConnectionString);
             await conn.OpenAsync();
             return (true, null);
         }
         catch (Exception ex)
         {
-            return (false, $"MySQL is not reachable at the configured test connection: {ex.Message}");
+            return (false, $"SQL Server is not reachable at the configured test connection: {ex.Message}");
         }
     }
 
     /// <summary>
-    /// Creates the duplicate schema and applies db/schema.sql. Idempotent and safe to call
+    /// Creates the duplicate database and applies db/schema.sql. Idempotent and safe to call
     /// from every fixture; the work happens once per test run.
     /// </summary>
     public static async Task EnsureProvisionedAsync()
@@ -145,18 +144,19 @@ public static class TestDatabase
         {
             if (_provisioned) return;
 
-            var serverOnly = new MySqlConnectionStringBuilder(ConnectionString)
+            var masterOnly = new SqlConnectionStringBuilder(ConnectionString)
             {
-                Database = string.Empty
+                InitialCatalog = "master"
             }.ConnectionString;
 
-            await using (var server = new MySqlConnection(serverOnly))
+            await using (var server = new SqlConnection(masterOnly))
             {
                 await server.OpenAsync();
                 await using var create = server.CreateCommand();
+                // The name is already constrained by AllowedDatabaseName, so bracket-quoting it
+                // is sufficient here; it can never be arbitrary caller input.
                 create.CommandText =
-                    $"CREATE DATABASE IF NOT EXISTS `{SchemaName}` "
-                    + "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
+                    $"IF DB_ID(N'{SchemaName}') IS NULL CREATE DATABASE [{SchemaName}];";
                 await create.ExecuteNonQueryAsync();
             }
 
@@ -174,25 +174,39 @@ public static class TestDatabase
         var schemaSql = await File.ReadAllTextAsync(RepoPath("db", "schema.sql"));
 
         // schema.sql hardcodes the production database name in its CREATE DATABASE and USE
-        // statements. Those two lines are redirected at the duplicate schema; everything
+        // statements. Those two lines are redirected at the duplicate database; everything
         // else — every column type, collation, index, and constraint — is applied verbatim,
         // which is what makes drift between test and production impossible.
         schemaSql = Regex.Replace(
             schemaSql,
-            @"CREATE\s+DATABASE\s+IF\s+NOT\s+EXISTS\s+moeez_mobile",
-            $"CREATE DATABASE IF NOT EXISTS `{SchemaName}`",
+            @"IF\s+DB_ID\(N'asynctxc_ElectronicAcces'\)\s+IS\s+NULL\s+CREATE\s+DATABASE\s+\[asynctxc_ElectronicAcces\]\s*;",
+            $"IF DB_ID(N'{SchemaName}') IS NULL CREATE DATABASE [{SchemaName}];",
             RegexOptions.IgnoreCase);
 
         schemaSql = Regex.Replace(
-            schemaSql, @"USE\s+moeez_mobile\s*;", $"USE `{SchemaName}`;", RegexOptions.IgnoreCase);
+            schemaSql, @"USE\s+\[asynctxc_ElectronicAcces\]\s*;", $"USE [{SchemaName}];",
+            RegexOptions.IgnoreCase);
 
-        await using var conn = new MySqlConnection(ConnectionString);
+        await using var conn = new SqlConnection(ConnectionString);
         await conn.OpenAsync();
 
-        // AllowUserVariables plus a multi-statement script: MySqlConnector runs the batch.
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = schemaSql;
-        await cmd.ExecuteNonQueryAsync();
+        // SqlClient has no batch parser, so GO separators are split here the way sqlcmd would.
+        foreach (var batch in SplitOnGo(schemaSql))
+        {
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = batch;
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    /// <summary>
+    /// Splits a script on its GO separators. GO is a client directive, not T-SQL: sending a
+    /// script containing it straight to the server is a syntax error.
+    /// </summary>
+    private static IEnumerable<string> SplitOnGo(string script)
+    {
+        var batches = Regex.Split(script, @"^\s*GO\s*$", RegexOptions.Multiline | RegexOptions.IgnoreCase);
+        return batches.Where(b => !string.IsNullOrWhiteSpace(b));
     }
 
     /// <summary>
@@ -201,16 +215,16 @@ public static class TestDatabase
     /// </summary>
     public static async Task ResetAsync()
     {
-        await using var conn = new MySqlConnection(ConnectionString);
+        await using var conn = new SqlConnection(ConnectionString);
         await conn.OpenAsync();
 
         var tables = new List<string>();
         await using (var read = conn.CreateCommand())
         {
             read.CommandText =
-                "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = @schema "
-                + "AND TABLE_TYPE = 'BASE TABLE';";
-            read.Parameters.AddWithValue("@schema", SchemaName);
+                "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+                + "WHERE TABLE_CATALOG = @db AND TABLE_TYPE = 'BASE TABLE';";
+            read.Parameters.AddWithValue("@db", SchemaName);
 
             await using var reader = await read.ExecuteReaderAsync();
             while (await reader.ReadAsync()) tables.Add(reader.GetString(0));
@@ -218,18 +232,24 @@ public static class TestDatabase
 
         if (tables.Count == 0) return;
 
-        await using var truncate = conn.CreateCommand();
-        truncate.CommandText =
-            "SET FOREIGN_KEY_CHECKS = 0; "
-            + string.Concat(tables.Select(t => $"TRUNCATE TABLE `{t}`; "))
-            + "SET FOREIGN_KEY_CHECKS = 1;";
-        await truncate.ExecuteNonQueryAsync();
+        // TRUNCATE is refused on a table referenced by a foreign key even with constraints
+        // disabled, so rows are deleted and the identity counters reset explicitly — which is
+        // what TRUNCATE was providing under MySQL.
+        await using var wipe = conn.CreateCommand();
+        wipe.CommandText =
+            string.Concat(tables.Select(t => $"ALTER TABLE [{t}] NOCHECK CONSTRAINT ALL; "))
+            + string.Concat(tables.Select(t => $"DELETE FROM [{t}]; "))
+            + string.Concat(tables.Select(t =>
+                $"IF OBJECTPROPERTY(OBJECT_ID('[{t}]'), 'TableHasIdentity') = 1 "
+                + $"DBCC CHECKIDENT('[{t}]', RESEED, 0) WITH NO_INFOMSGS; "))
+            + string.Concat(tables.Select(t => $"ALTER TABLE [{t}] WITH CHECK CHECK CONSTRAINT ALL; "));
+        await wipe.ExecuteNonQueryAsync();
     }
 
     /// <summary>Opens a connection to the duplicate database.</summary>
-    public static async Task<MySqlConnection> OpenAsync()
+    public static async Task<SqlConnection> OpenAsync()
     {
-        var conn = new MySqlConnection(ConnectionString);
+        var conn = new SqlConnection(ConnectionString);
         await conn.OpenAsync();
         return conn;
     }

@@ -1,4 +1,4 @@
-using MySqlConnector;
+using Microsoft.Data.SqlClient;
 
 namespace MoeezMobile.Api.Tests.Fixtures;
 
@@ -11,13 +11,13 @@ public static class TestData
 {
     /// <summary>Inserts a product and returns its id.</summary>
     public static async Task<int> InsertProductAsync(
-        MySqlConnection conn,
+        SqlConnection conn,
         string name,
         decimal purchasePrice,
         decimal retailPrice,
         int stock,
         string? code = null,
-        MySqlTransaction? tx = null)
+        SqlTransaction? tx = null)
     {
         await using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
@@ -26,7 +26,7 @@ public static class TestData
                 (Code, Name, PurchasePrice, WholesalePrice, RetailPrice, QuantityInStock, IsActive)
             VALUES
                 (@code, @name, @purchase, @retail, @retail, @stock, 1);
-            SELECT LAST_INSERT_ID();
+            SELECT CAST(SCOPE_IDENTITY() AS INT);
             """;
         cmd.Parameters.AddWithValue("@code", code ?? $"PRD-{Guid.NewGuid().ToString("N")[..8]}");
         cmd.Parameters.AddWithValue("@name", name);
@@ -39,7 +39,7 @@ public static class TestData
 
     /// <summary>Inserts a user and returns its id.</summary>
     public static async Task<int> InsertUserAsync(
-        MySqlConnection conn,
+        SqlConnection conn,
         string username = "owner",
         string role = "Admin",
         string? fullName = null)
@@ -48,7 +48,7 @@ public static class TestData
         cmd.CommandText = """
             INSERT INTO Users (Username, FullName, PasswordHash, Role, IsActive)
             VALUES (@username, @fullName, @hash, @role, 1);
-            SELECT LAST_INSERT_ID();
+            SELECT CAST(SCOPE_IDENTITY() AS INT);
             """;
         cmd.Parameters.AddWithValue("@username", username);
         cmd.Parameters.AddWithValue("@fullName", fullName ?? UrduFixtures.CustomerName);
@@ -60,7 +60,7 @@ public static class TestData
     }
 
     /// <summary>Reads back the stored header figures for a sale.</summary>
-    public static async Task<SaleHeaderRow> ReadSaleHeaderAsync(MySqlConnection conn, int saleId)
+    public static async Task<SaleHeaderRow> ReadSaleHeaderAsync(SqlConnection conn, int saleId)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
@@ -84,7 +84,7 @@ public static class TestData
     }
 
     /// <summary>Reads the current stock balance for a product.</summary>
-    public static async Task<int> ReadStockAsync(MySqlConnection conn, int productId)
+    public static async Task<int> ReadStockAsync(SqlConnection conn, int productId)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT QuantityInStock FROM Products WHERE Id = @id;";
@@ -93,14 +93,14 @@ public static class TestData
     }
 
     /// <summary>Counts rows in a table, for asserting that a rollback left nothing behind.</summary>
-    public static async Task<int> CountAsync(MySqlConnection conn, string table)
+    public static async Task<int> CountAsync(SqlConnection conn, string table)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = $"SELECT COUNT(*) FROM `{table}`;";
         return Convert.ToInt32(await cmd.ExecuteScalarAsync());
     }
 
-    public static async Task<PurchaseHeaderRow> ReadPurchaseHeaderAsync(MySqlConnection conn, int purchaseId)
+    public static async Task<PurchaseHeaderRow> ReadPurchaseHeaderAsync(SqlConnection conn, int purchaseId)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """

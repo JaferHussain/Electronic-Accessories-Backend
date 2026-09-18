@@ -70,7 +70,7 @@ public class LookupRepository : ILookupRepository
         await using var conn = await _factory.CreateOpenConnectionAsync();
 
         var existing = await conn.ExecuteScalarAsync<int?>(
-            $"SELECT Id FROM {table} WHERE Name = @Name LIMIT 1;", new { Name = name });
+            $"SELECT TOP (1) Id FROM {table} WHERE Name = @Name;", new { Name = name });
         if (existing.HasValue)
         {
             // Re-activate a previously hidden entry rather than creating a duplicate.
@@ -79,7 +79,7 @@ public class LookupRepository : ILookupRepository
         }
 
         return await conn.ExecuteScalarAsync<int>(
-            $"INSERT INTO {table} (Name, IsActive) VALUES (@Name, 1); SELECT LAST_INSERT_ID();",
+            $"INSERT INTO {table} (Name, IsActive) VALUES (@Name, 1); SELECT CAST(SCOPE_IDENTITY() AS INT);",
             new { Name = name });
     }
 
@@ -114,7 +114,7 @@ public class LookupRepository : ILookupRepository
         return await conn.ExecuteScalarAsync<int>(@"
             INSERT INTO Suppliers (Name, Phone, Address, OpeningBalance, IsActive)
             VALUES (@Name, @Phone, @Address, @OpeningBalance, 1);
-            SELECT LAST_INSERT_ID();",
+            SELECT CAST(SCOPE_IDENTITY() AS INT);",
             new { Name = dto.Name.Trim(), dto.Phone, dto.Address, dto.OpeningBalance });
     }
 
@@ -155,8 +155,11 @@ public class LookupRepository : ILookupRepository
         {
             if (string.IsNullOrWhiteSpace(s.Key)) continue;
             await conn.ExecuteAsync(@"
-                INSERT INTO AppSettings (SettingKey, SettingValue) VALUES (@Key, @Value)
-                ON DUPLICATE KEY UPDATE SettingValue = VALUES(SettingValue);",
+                UPDATE AppSettings WITH (UPDLOCK, HOLDLOCK)
+                SET SettingValue = @Value WHERE SettingKey = @Key;
+
+                IF @@ROWCOUNT = 0
+                    INSERT INTO AppSettings (SettingKey, SettingValue) VALUES (@Key, @Value);",
                 new { Key = s.Key.Trim(), s.Value });
         }
     }

@@ -1,4 +1,5 @@
 using Dapper;
+using Microsoft.Data.SqlClient;
 using MoeezMobile.Api.Data;
 using MoeezMobile.Api.Helpers;
 using MoeezMobile.Api.Models.Common;
@@ -37,8 +38,8 @@ public class ProductRepository : IProductRepository
                p.CategoryId, c.Name AS CategoryName, p.Model, p.ImagePath,
                p.PurchasePrice, p.WholesalePrice, p.RetailPrice,
                p.QuantityInStock, p.LowStockThreshold, p.IsActive,
-               IFNULL(pi.Qty, 0) AS TotalPurchased,
-               IFNULL(si.Qty, 0) AS TotalSold
+               ISNULL(pi.Qty, 0) AS TotalPurchased,
+               ISNULL(si.Qty, 0) AS TotalSold
         FROM Products p
         LEFT JOIN Brands     b ON b.Id = p.BrandId
         LEFT JOIN Categories c ON c.Id = p.CategoryId
@@ -81,8 +82,8 @@ public class ProductRepository : IProductRepository
         var sql = $@"
             {ListProjection}
             {whereSql}
-            ORDER BY (p.QuantityInStock <= p.LowStockThreshold) DESC, p.Name
-            LIMIT @Take OFFSET @Skip;
+            ORDER BY CASE WHEN p.QuantityInStock <= p.LowStockThreshold THEN 1 ELSE 0 END DESC, p.Name
+            OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;
 
             SELECT COUNT(*)
             FROM Products p
@@ -141,12 +142,12 @@ public class ProductRepository : IProductRepository
               AND (p.Name LIKE @Like OR p.Model LIKE @Like OR p.Code LIKE @Like
                    OR p.Barcode LIKE @Like OR b.Name LIKE @Like OR c.Name LIKE @Like)
             ORDER BY
-                (p.Barcode = @Exact) DESC,
-                (p.Code = @Exact) DESC,
-                (p.Name LIKE @Prefix) DESC,
-                (p.QuantityInStock > 0) DESC,
+                CASE WHEN p.Barcode = @Exact THEN 1 ELSE 0 END DESC,
+                CASE WHEN p.Code = @Exact THEN 1 ELSE 0 END DESC,
+                CASE WHEN p.Name LIKE @Prefix THEN 1 ELSE 0 END DESC,
+                CASE WHEN p.QuantityInStock > 0 THEN 1 ELSE 0 END DESC,
                 p.Name
-            LIMIT @Take;",
+            OFFSET 0 ROWS FETCH NEXT @Take ROWS ONLY;",
             new { Like = $"%{term}%", Prefix = $"{term}%", Exact = term, Take = Math.Clamp(take, 1, 100) });
 
         return rows.ToList();
@@ -156,21 +157,21 @@ public class ProductRepository : IProductRepository
     {
         await using var conn = await _factory.CreateOpenConnectionAsync();
         return await conn.QuerySingleOrDefaultAsync<ProductSearchItemDto>(@"
-            SELECT p.Id, p.Code, p.Barcode, p.Name, p.Model,
+            SELECT TOP (1)
+                   p.Id, p.Code, p.Barcode, p.Name, p.Model,
                    b.Name AS BrandName, c.Name AS CategoryName, p.ImagePath,
                    p.PurchasePrice, p.WholesalePrice, p.RetailPrice,
                    p.QuantityInStock, p.LowStockThreshold
             FROM Products p
             LEFT JOIN Brands     b ON b.Id = p.BrandId
             LEFT JOIN Categories c ON c.Id = p.CategoryId
-            WHERE p.Barcode = @Barcode AND p.IsActive = 1
-            LIMIT 1;", new { Barcode = barcode.Trim() });
+            WHERE p.Barcode = @Barcode AND p.IsActive = 1;", new { Barcode = barcode.Trim() });
     }
 
     public async Task<int> CreateAsync(ProductFormDto dto, string? imagePath)
     {
         await using var conn = await _factory.CreateOpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
         try
         {
             var code = await InvoiceNumberGenerator.NextGlobalAsync(conn, tx, "PRD");
@@ -184,7 +185,7 @@ public class ProductRepository : IProductRepository
                     (@Code, @Barcode, @Name, @BrandId, @CategoryId, @Model, @ImagePath,
                      @PurchasePrice, @WholesalePrice, @RetailPrice,
                      @QuantityInStock, @LowStockThreshold, 1);
-                SELECT LAST_INSERT_ID();",
+                SELECT CAST(SCOPE_IDENTITY() AS INT);",
                 new
                 {
                     Code = code,
@@ -206,7 +207,7 @@ public class ProductRepository : IProductRepository
                 await conn.ExecuteAsync(@"
                     INSERT INTO StockLedger
                         (ProductId, TxnType, ReferenceId, ReferenceNo, QtyIn, QtyOut, BalanceAfter, Notes)
-                    VALUES (@ProductId, @TxnType, NULL, 'OPENING', @Qty, 0, @Qty, 'ابتدائی اسٹاک');",
+                    VALUES (@ProductId, @TxnType, NULL, N'OPENING', @Qty, 0, @Qty, N'ابتدائی اسٹاک');",
                     new { ProductId = productId, TxnType = TxnType.Adjustment, Qty = dto.OpeningQuantity }, tx);
             }
 
@@ -266,11 +267,11 @@ public class ProductRepository : IProductRepository
         if (newQuantity < 0) throw new BusinessException(MessageKeys.NegativeQuantity);
 
         await using var conn = await _factory.CreateOpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
         try
         {
             var current = await conn.ExecuteScalarAsync<int?>(
-                "SELECT QuantityInStock FROM Products WHERE Id = @Id FOR UPDATE;", new { Id = id }, tx);
+                "SELECT QuantityInStock FROM Products WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id;", new { Id = id }, tx);
 
             if (current is null) throw new NotFoundException(MessageKeys.ProductNotFound);
 
@@ -284,7 +285,7 @@ public class ProductRepository : IProductRepository
                 await conn.ExecuteAsync(@"
                     INSERT INTO StockLedger
                         (ProductId, TxnType, ReferenceId, ReferenceNo, QtyIn, QtyOut, BalanceAfter, Notes)
-                    VALUES (@ProductId, @TxnType, NULL, 'ADJUST', @QtyIn, @QtyOut, @Balance, @Notes);",
+                    VALUES (@ProductId, @TxnType, NULL, N'ADJUST', @QtyIn, @QtyOut, @Balance, @Notes);",
                     new
                     {
                         ProductId = id,

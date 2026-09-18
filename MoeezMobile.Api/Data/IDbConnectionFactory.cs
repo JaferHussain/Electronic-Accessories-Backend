@@ -1,11 +1,11 @@
-using MySqlConnector;
+using Microsoft.Data.SqlClient;
 
 namespace MoeezMobile.Api.Data;
 
 public interface IDbConnectionFactory
 {
-    MySqlConnection CreateConnection();
+    SqlConnection CreateConnection();
 
     /// <summary>Creates and opens a connection.</summary>
-    Task<MySqlConnection> CreateOpenConnectionAsync(CancellationToken ct = default);
+    Task<SqlConnection> CreateOpenConnectionAsync(CancellationToken ct = default);
 }

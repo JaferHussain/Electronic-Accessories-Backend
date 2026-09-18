@@ -20,7 +20,7 @@ if (string.IsNullOrWhiteSpace(jwtSettings.Key) || jwtSettings.Key.Length < 32)
 builder.Services.AddSingleton(jwtSettings);
 
 // ---------- Data / helpers ----------
-builder.Services.AddSingleton<IDbConnectionFactory, MySqlConnectionFactory>();
+builder.Services.AddSingleton<IDbConnectionFactory, SqlServerConnectionFactory>();
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IJwtTokenGenerator, JwtTokenGenerator>();
 

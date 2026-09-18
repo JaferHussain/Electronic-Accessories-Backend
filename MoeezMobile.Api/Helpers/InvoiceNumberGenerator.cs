@@ -1,5 +1,5 @@
 using Dapper;
-using MySqlConnector;
+using Microsoft.Data.SqlClient;
 
 namespace MoeezMobile.Api.Helpers;
 
@@ -14,7 +14,7 @@ public static class InvoiceNumberGenerator
 
     /// <summary>Daily sequence, e.g. SAL-20260830-001 / PUR-20260830-001.</summary>
     public static async Task<string> NextDailyAsync(
-        MySqlConnection conn, MySqlTransaction tx, string docType, DateTime date)
+        SqlConnection conn, SqlTransaction tx, string docType, DateTime date)
     {
         var seq = await NextNumberAsync(conn, tx, docType, date.Date);
         return $"{docType}-{date:yyyyMMdd}-{seq:D3}";
@@ -22,29 +22,42 @@ public static class InvoiceNumberGenerator
 
     /// <summary>Global sequence, e.g. PRD-0001.</summary>
     public static async Task<string> NextGlobalAsync(
-        MySqlConnection conn, MySqlTransaction tx, string docType, int padding = 4)
+        SqlConnection conn, SqlTransaction tx, string docType, int padding = 4)
     {
         var seq = await NextNumberAsync(conn, tx, docType, DateTime.Parse(GlobalCounterDate));
         return $"{docType}-{seq.ToString().PadLeft(padding, '0')}";
     }
 
     private static async Task<int> NextNumberAsync(
-        MySqlConnection conn, MySqlTransaction tx, string docType, DateTime counterDate)
+        SqlConnection conn, SqlTransaction tx, string docType, DateTime counterDate)
     {
-        // The upsert both creates the row and increments it atomically, and leaves the row
-        // write-locked for the rest of this transaction - so the SELECT that follows cannot
-        // read a value another session is about to take.
-        // (LAST_INSERT_ID() is deliberately not used here: DocumentCounters has no
-        //  AUTO_INCREMENT column, so on a fresh INSERT it would return a stale value from an
-        //  earlier statement on the same connection.)
-        await conn.ExecuteAsync(@"
-            INSERT INTO DocumentCounters (DocType, CounterDate, LastNumber)
-            VALUES (@DocType, @CounterDate, 1)
-            ON DUPLICATE KEY UPDATE LastNumber = LastNumber + 1;",
+        // MySQL's INSERT ... ON DUPLICATE KEY UPDATE did the create-or-increment in one
+        // statement. The T-SQL equivalent is UPDATE-then-INSERT, and the ordering matters:
+        //
+        //   UPDATE first, with (UPDLOCK, HOLDLOCK) on the key range, so the row is locked
+        //   for the rest of this transaction exactly as it was before. When the row exists
+        //   this is the whole operation and no INSERT is attempted.
+        //
+        //   HOLDLOCK is what makes the missing-row case safe: it takes a range lock on the
+        //   key even when the UPDATE matches nothing, so a second session cannot slip its
+        //   own INSERT in between our UPDATE and our INSERT. Without it two tills opening
+        //   the first invoice of the day would both insert and one would hit the unique
+        //   index. The UPDATE ... OUTPUT returns the new value directly, so there is no
+        //   second read that a concurrent session could race.
+        var updated = await conn.QuerySingleOrDefaultAsync<int?>(@"
+            UPDATE DocumentCounters WITH (UPDLOCK, HOLDLOCK)
+            SET LastNumber = LastNumber + 1
+            OUTPUT INSERTED.LastNumber
+            WHERE DocType = @DocType AND CounterDate = @CounterDate;",
             new { DocType = docType, CounterDate = counterDate }, tx);
 
-        return await conn.ExecuteScalarAsync<int>(
-            "SELECT LastNumber FROM DocumentCounters WHERE DocType = @DocType AND CounterDate = @CounterDate;",
+        if (updated.HasValue) return updated.Value;
+
+        await conn.ExecuteAsync(@"
+            INSERT INTO DocumentCounters (DocType, CounterDate, LastNumber)
+            VALUES (@DocType, @CounterDate, 1);",
             new { DocType = docType, CounterDate = counterDate }, tx);
+
+        return 1;
     }
 }

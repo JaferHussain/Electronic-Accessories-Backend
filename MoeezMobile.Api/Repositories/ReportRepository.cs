@@ -36,7 +36,7 @@ public class ReportRepository : IReportRepository
         await using var conn = await _factory.CreateOpenConnectionAsync();
         var rows = (await conn.QueryAsync<DailySalesRowDto>(@"
             SELECT h.Id AS SaleId, h.InvoiceNo, h.SaleDate, h.CreatedAt, h.CustomerName,
-                   IFNULL((SELECT SUM(Quantity) FROM SaleItems WHERE SaleId = h.Id), 0) AS TotalQuantity,
+                   ISNULL((SELECT SUM(Quantity) FROM SaleItems WHERE SaleId = h.Id), 0) AS TotalQuantity,
                    h.SubTotal, h.Discount, h.TotalAmount, h.TotalCost, h.TotalProfit,
                    h.PaymentMethod
             FROM Sales h
@@ -71,15 +71,15 @@ public class ReportRepository : IReportRepository
 
         await using var conn = await _factory.CreateOpenConnectionAsync();
         var rows = (await conn.QueryAsync<MonthlySalesRowDto>(@"
-            SELECT DATE_FORMAT(h.SaleDate, '%Y-%m-%d') AS Period,
+            SELECT CONVERT(char(10), h.SaleDate, 23) AS Period,
                    COUNT(*) AS InvoiceCount,
-                   IFNULL(SUM((SELECT SUM(Quantity) FROM SaleItems WHERE SaleId = h.Id)), 0) AS TotalQuantity,
+                   ISNULL(SUM((SELECT SUM(Quantity) FROM SaleItems WHERE SaleId = h.Id)), 0) AS TotalQuantity,
                    SUM(h.TotalAmount) AS TotalAmount,
                    SUM(h.TotalCost)   AS TotalCost,
                    SUM(h.TotalProfit) AS TotalProfit
             FROM Sales h
             WHERE h.IsVoided = 0 AND h.SaleDate BETWEEN @From AND @To
-            GROUP BY DATE_FORMAT(h.SaleDate, '%Y-%m-%d')
+            GROUP BY CONVERT(char(10), h.SaleDate, 23)
             ORDER BY Period;", new { From = from, To = to })).ToList();
 
         return new ReportResult<MonthlySalesRowDto>
@@ -106,7 +106,7 @@ public class ReportRepository : IReportRepository
         await using var conn = await _factory.CreateOpenConnectionAsync();
         var rows = (await conn.QueryAsync<PurchaseSummaryRowDto>(@"
             SELECT h.Id AS PurchaseId, h.InvoiceNo, h.PurchaseDate, s.Name AS SupplierName,
-                   IFNULL((SELECT SUM(Quantity) FROM PurchaseItems WHERE PurchaseId = h.Id), 0) AS TotalQuantity,
+                   ISNULL((SELECT SUM(Quantity) FROM PurchaseItems WHERE PurchaseId = h.Id), 0) AS TotalQuantity,
                    h.SubTotal, h.Discount, h.TotalAmount, h.PaidAmount
             FROM Purchases h
             LEFT JOIN Suppliers s ON s.Id = h.SupplierId
@@ -221,13 +221,13 @@ public class ReportRepository : IReportRepository
 
         await using var conn = await _factory.CreateOpenConnectionAsync();
         var rows = (await conn.QueryAsync<StockHistoryRowDto>($@"
-            SELECT l.Id, l.ProductId, p.Name AS ProductName, p.Code AS ProductCode,
+            SELECT TOP (5000)
+                   l.Id, l.ProductId, p.Name AS ProductName, p.Code AS ProductCode,
                    l.TxnDate, l.TxnType, l.ReferenceNo, l.QtyIn, l.QtyOut, l.BalanceAfter, l.Notes
             FROM StockLedger l
             JOIN Products p ON p.Id = l.ProductId
             {whereSql}
-            ORDER BY l.TxnDate DESC, l.Id DESC
-            LIMIT 5000;",
+            ORDER BY l.TxnDate DESC, l.Id DESC;",
             new { ProductId = productId, From = from?.Date, ToExclusive = to?.Date.AddDays(1) })).ToList();
 
         return new ReportResult<StockHistoryRowDto>

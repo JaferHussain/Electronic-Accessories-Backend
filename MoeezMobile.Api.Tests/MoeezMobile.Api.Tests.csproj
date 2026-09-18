@@ -25,8 +25,8 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
 
-    <!-- Integration tier: real MySQL 8, real HTTP pipeline -->
-    <PackageReference Include="Testcontainers.MySql" Version="4.1.0" />
+    <!-- Integration tier: real SQL Server, real HTTP pipeline -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.11" />
   </ItemGroup>
 

@@ -27,8 +27,8 @@ public class DomainPurityTest
     private static readonly string[] ForbiddenTypeNames =
     [
         "IDbConnectionFactory",
-        "MySqlConnection",
-        "MySqlTransaction",
+        "SqlConnection",
+        "SqlTransaction",
         "IDbConnection",
         "IDbTransaction",
         "TimeProvider",

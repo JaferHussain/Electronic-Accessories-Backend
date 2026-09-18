@@ -1,4 +1,5 @@
 using Dapper;
+using Microsoft.Data.SqlClient;
 using MoeezMobile.Api.Data;
 using MoeezMobile.Api.Helpers;
 using MoeezMobile.Api.Models.Common;
@@ -31,8 +32,8 @@ public class SaleRepository : ISaleRepository
         SELECT h.Id, h.InvoiceNo, h.SaleDate, h.CustomerName, h.CustomerPhone, h.SaleType,
                h.SubTotal, h.Discount, h.TotalAmount, h.TotalCost, h.TotalProfit,
                h.PaymentMethod, h.IsVoided, u.FullName AS CreatedByName, h.CreatedAt,
-               IFNULL(i.LineCount, 0) AS ItemCount,
-               IFNULL(i.QtySum, 0)    AS TotalQuantity
+               ISNULL(i.LineCount, 0) AS ItemCount,
+               ISNULL(i.QtySum, 0)    AS TotalQuantity
         FROM Sales h
         LEFT JOIN Users u ON u.Id = h.CreatedBy
         LEFT JOIN (
@@ -65,7 +66,7 @@ public class SaleRepository : ISaleRepository
             {HeaderProjection}
             {whereSql}
             ORDER BY h.SaleDate DESC, h.Id DESC
-            LIMIT @Take OFFSET @Skip;
+            OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;
 
             SELECT COUNT(*) FROM Sales h {whereSql};";
 
@@ -131,7 +132,7 @@ public class SaleRepository : ISaleRepository
         var saleDate = (dto.SaleDate ?? DateTime.Today).Date;
 
         await using var conn = await _factory.CreateOpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
         try
         {
             var invoiceNo = await InvoiceNumberGenerator.NextDailyAsync(conn, tx, "SAL", saleDate);
@@ -144,7 +145,7 @@ public class SaleRepository : ISaleRepository
                 VALUES
                     (@InvoiceNo, @SaleDate, @CustomerName, @CustomerPhone, @SaleType,
                      0, @Discount, 0, 0, 0, @PaymentMethod, 0, @UserId);
-                SELECT LAST_INSERT_ID();",
+                SELECT CAST(SCOPE_IDENTITY() AS INT);",
                 new
                 {
                     InvoiceNo = invoiceNo,
@@ -203,7 +204,7 @@ public class SaleRepository : ISaleRepository
                 await conn.ExecuteAsync(@"
                     INSERT INTO StockLedger
                         (ProductId, TxnType, ReferenceId, ReferenceNo, QtyIn, QtyOut, BalanceAfter, Notes)
-                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, 0, @QtyOut, @Balance, 'فروخت');",
+                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, 0, @QtyOut, @Balance, N'فروخت');",
                     new
                     {
                         item.ProductId,
@@ -218,11 +219,12 @@ public class SaleRepository : ISaleRepository
             // Totals recomputed from the stored lines. The discount reduces the amount taken,
             // so it comes out of profit too.
             await conn.ExecuteAsync(@"
-                UPDATE Sales h
-                SET h.SubTotal    = (SELECT IFNULL(SUM(LineTotal), 0)  FROM SaleItems WHERE SaleId = h.Id),
-                    h.TotalCost   = (SELECT IFNULL(SUM(UnitCost * Quantity), 0) FROM SaleItems WHERE SaleId = h.Id),
-                    h.TotalAmount = (SELECT IFNULL(SUM(LineTotal), 0)  FROM SaleItems WHERE SaleId = h.Id) - h.Discount,
-                    h.TotalProfit = (SELECT IFNULL(SUM(LineProfit), 0) FROM SaleItems WHERE SaleId = h.Id) - h.Discount
+                UPDATE h
+                SET SubTotal    = (SELECT ISNULL(SUM(LineTotal), 0)  FROM SaleItems WHERE SaleId = h.Id),
+                    TotalCost   = (SELECT ISNULL(SUM(UnitCost * Quantity), 0) FROM SaleItems WHERE SaleId = h.Id),
+                    TotalAmount = (SELECT ISNULL(SUM(LineTotal), 0)  FROM SaleItems WHERE SaleId = h.Id) - h.Discount,
+                    TotalProfit = (SELECT ISNULL(SUM(LineProfit), 0) FROM SaleItems WHERE SaleId = h.Id) - h.Discount
+                FROM Sales h
                 WHERE h.Id = @Id;", new { Id = saleId }, tx);
 
             await tx.CommitAsync();
@@ -239,11 +241,11 @@ public class SaleRepository : ISaleRepository
     public async Task VoidAsync(int id, int userId)
     {
         await using var conn = await _factory.CreateOpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
         try
         {
             var header = await conn.QuerySingleOrDefaultAsync<Sale>(
-                "SELECT * FROM Sales WHERE Id = @Id FOR UPDATE;", new { Id = id }, tx);
+                "SELECT * FROM Sales WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id;", new { Id = id }, tx);
 
             if (header is null) throw new NotFoundException(MessageKeys.SaleNotFound);
             if (header.IsVoided) throw new BusinessException(MessageKeys.AlreadyVoided);
@@ -264,7 +266,7 @@ public class SaleRepository : ISaleRepository
                 await conn.ExecuteAsync(@"
                     INSERT INTO StockLedger
                         (ProductId, TxnType, ReferenceId, ReferenceNo, QtyIn, QtyOut, BalanceAfter, Notes)
-                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, @QtyIn, 0, @Balance, 'فروخت منسوخ');",
+                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, @QtyIn, 0, @Balance, N'فروخت منسوخ');",
                     new
                     {
                         item.ProductId,

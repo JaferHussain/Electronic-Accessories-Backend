@@ -1,5 +1,5 @@
+using Microsoft.Data.SqlClient;
 using MoeezMobile.Api.Tests.Fixtures;
-using MySqlConnector;
 
 namespace MoeezMobile.Api.Tests.Integration;
 
@@ -13,10 +13,10 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
     [Fact]
     public void TargetSchema_IsNeverTheLiveDatabase()
     {
-        // The shop's live database is on this same MySQL server, and this suite truncates
+        // The shop's live database is on this same SQL Server instance, and this suite empties
         // every table between tests. This assertion is the last line of defence.
-        TestDatabase.SchemaName.Should().NotBe("moeez_mobile");
-        TestDatabase.SchemaName.Should().StartWith("moeez_test");
+        TestDatabase.SchemaName.Should().NotBe("asynctxc_ElectronicAcces");
+        TestDatabase.SchemaName.Should().EndWith("test");
     }
 
     [Fact]
@@ -26,38 +26,38 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
         await using var conn = await Fixture.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText =
-            "SELECT TABLE_NAME FROM information_schema.TABLES "
-            + "WHERE TABLE_SCHEMA = @schema AND TABLE_TYPE = 'BASE TABLE';";
-        cmd.Parameters.AddWithValue("@schema", TestDatabase.SchemaName);
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+            + "WHERE TABLE_CATALOG = @db AND TABLE_TYPE = 'BASE TABLE';";
+        cmd.Parameters.AddWithValue("@db", TestDatabase.SchemaName);
 
         var tables = new List<string>();
         await using var reader = await cmd.ExecuteReaderAsync();
         while (await reader.ReadAsync()) tables.Add(reader.GetString(0));
 
-        // MySQL on Windows runs with lower_case_table_names=1, so identifiers come back
-        // folded to lowercase. Compared case-insensitively here because the schema is the
-        // same file either way — but note this differs on Linux CI, where table names are
-        // case-sensitive and the folding does not happen.
+        // SQL Server identifier comparison follows the database collation, which is
+        // case-insensitive by default. Folded here so the assertion does not depend on that
+        // default holding.
         tables.Select(t => t.ToLowerInvariant()).Should().Contain(
             ["products", "sales", "saleitems", "purchases", "purchaseitems",
              "stockledger", "users", "documentcounters"]);
     }
 
     [Fact]
-    public async Task Schema_UsesUtf8mb4Collation()
+    public async Task UrduColumns_AreNVarchar()
     {
-        // utf8 (3-byte) silently truncates 4-byte characters. The Urdu round-trip tests
-        // would pass against a utf8 column while production data was being mangled.
+        // The MySQL equivalent of this test asserted the schema's default charset was utf8mb4.
+        // SQL Server has no per-database charset knob; what matters instead is that text
+        // columns are NVARCHAR rather than VARCHAR. A VARCHAR column silently folds Urdu to
+        // the server code page, which is the same defect in a different shape.
         await using var conn = await Fixture.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText =
-            "SELECT DEFAULT_CHARACTER_SET_NAME FROM information_schema.SCHEMATA "
-            + "WHERE SCHEMA_NAME = @schema;";
-        cmd.Parameters.AddWithValue("@schema", TestDatabase.SchemaName);
+            "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS "
+            + "WHERE TABLE_NAME = 'Products' AND COLUMN_NAME = 'Name';";
 
-        var charset = (string?)await cmd.ExecuteScalarAsync();
+        var dataType = (string?)await cmd.ExecuteScalarAsync();
 
-        charset.Should().Be("utf8mb4");
+        dataType.Should().Be("nvarchar", "Urdu product names cannot survive a VARCHAR column");
     }
 
     [Fact]
@@ -86,8 +86,8 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
     public async Task UrduText_SurvivesAStoreAndRetrieveCycleUnchanged()
     {
         // The reason this suite uses a real database rather than an in-memory substitute:
-        // a fake would return whatever it was handed. Only MySQL can prove the column,
-        // the connection charset, and the collation all agree.
+        // a fake would return whatever it was handed. Only SQL Server can prove the column
+        // type, the parameter type, and the collation all agree.
         await using var conn = await Fixture.OpenAsync();
 
         await using (var insert = conn.CreateCommand())
@@ -98,7 +98,7 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
         }
 
         await using var read = conn.CreateCommand();
-        read.CommandText = "SELECT Name FROM Brands LIMIT 1;";
+        read.CommandText = "SELECT TOP (1) Name FROM Brands;";
         var stored = (string?)await read.ExecuteScalarAsync();
 
         stored.Should().Be(UrduFixtures.ProductCharger);
@@ -118,7 +118,7 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
         }
 
         await using var read = conn.CreateCommand();
-        read.CommandText = "SELECT Name FROM Brands LIMIT 1;";
+        read.CommandText = "SELECT TOP (1) Name FROM Brands;";
         var stored = (string?)await read.ExecuteScalarAsync();
 
         stored.Should().Be(hazard);
@@ -127,8 +127,10 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
     [Fact]
     public async Task DecimalColumns_RoundOnWriteAwayFromZero()
     {
-        // Pins how MySQL rounds a DECIMAL(18,2) write. Every C#-side rounding decision has to
-        // agree with this, or the stored total and the calculated total silently diverge.
+        // Pins how SQL Server rounds a DECIMAL(18,2) write. Every C#-side rounding decision
+        // has to agree with this, or the stored total and the calculated total silently
+        // diverge. SQL Server rounds half away from zero on a decimal-to-decimal narrowing,
+        // which is the same behaviour MySQL had here.
         await using var conn = await Fixture.OpenAsync();
 
         await using (var insert = conn.CreateCommand())
@@ -143,10 +145,10 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
         }
 
         await using var read = conn.CreateCommand();
-        read.CommandText = "SELECT PurchasePrice FROM Products LIMIT 1;";
+        read.CommandText = "SELECT TOP (1) PurchasePrice FROM Products;";
         var stored = (decimal)(await read.ExecuteScalarAsync())!;
 
-        stored.Should().Be(33.34m, "MySQL rounds DECIMAL away from zero on write");
+        stored.Should().Be(33.34m, "SQL Server rounds DECIMAL away from zero on write");
     }
 }
 
@@ -158,31 +160,33 @@ public class TestDatabaseProvisioningTests(DatabaseFixture fixture) : DatabaseTe
 [Trait(TestCategories.Name, TestCategories.Unit)]
 public class TestDatabaseGuardTests
 {
+    private static string Conn(string database) =>
+        $"Server=.\\MSSQLSERVER2012;Database={database};User Id=Electronic;Password=x;"
+        + "TrustServerCertificate=True";
+
     [Theory]
-    [InlineData("moeez_mobile")]      // the live shop database
-    [InlineData("mysql")]
+    [InlineData("asynctxc_ElectronicAcces")]   // the live shop database
+    [InlineData("master")]
     [InlineData("production")]
     [InlineData("moeez")]
-    [InlineData("moeez_testing")]     // close, but not the accepted shape
+    [InlineData("moeez_testing")]              // close, but not the accepted shape
     public void SchemaNamesOutsideTheTestPattern_AreRejected(string database)
     {
-        var reason = TestDatabase.Reject(
-            $"Server=localhost;Database={database};User ID=root;Password=;CharSet=utf8mb4;");
+        var reason = TestDatabase.Reject(Conn(database));
 
         reason.Should().NotBeNull(
-            "the suite truncates every table, and the live database is on the same server");
-        reason.Should().Contain(database, "the message must name the schema that was refused");
+            "the suite empties every table, and the live database is on the same server");
+        reason.Should().Contain(database, "the message must name the database that was refused");
     }
 
     [Fact]
     public void RefusingTheLiveDatabase_SaysItIsAConfigurationMistakeNotAnOutage()
     {
         // The first version of this guard threw from a static constructor, so the refusal
-        // surfaced as "MySQL is not reachable". Someone aimed at the live schema would have
-        // gone off to restart a perfectly healthy server. The message has to distinguish
+        // surfaced as "SQL Server is not reachable". Someone aimed at the live database would
+        // have gone off to restart a perfectly healthy server. The message has to distinguish
         // the two.
-        var reason = TestDatabase.Reject(
-            "Server=localhost;Database=moeez_mobile;User ID=root;Password=;CharSet=utf8mb4;");
+        var reason = TestDatabase.Reject(Conn("asynctxc_ElectronicAcces"));
 
         reason.Should().Contain("REFUSED");
         reason.Should().Contain("not an unreachable server");
@@ -193,31 +197,26 @@ public class TestDatabaseGuardTests
     [InlineData("moeez_test")]
     [InlineData("moeez_test_ci")]
     [InlineData("MOEEZ_TEST")]
+    [InlineData("asynctxc_ElectronicAcces_test")]
+    [InlineData("asynctxc_ElectronicAcces_test_ci")]
     public void TestSchemaNames_AreAccepted(string database)
     {
-        TestDatabase.Reject(
-            $"Server=localhost;Database={database};User ID=root;Password=;CharSet=utf8mb4;")
-            .Should().BeNull();
+        TestDatabase.Reject(Conn(database)).Should().BeNull();
+    }
+
+    [Fact]
+    public void TheLiveDatabaseAndItsTestTwin_AreTreatedDifferently()
+    {
+        // The two names differ by one suffix. Getting this pair wrong in either direction is
+        // the mistake with the worst consequence in the whole suite, so it is pinned directly.
+        TestDatabase.Reject(Conn("asynctxc_ElectronicAcces")).Should().NotBeNull();
+        TestDatabase.Reject(Conn("asynctxc_ElectronicAcces_test")).Should().BeNull();
     }
 
     [Fact]
     public void AConnectionWithNoDatabaseNamed_IsRejected()
     {
-        TestDatabase.Reject("Server=localhost;User ID=root;Password=;CharSet=utf8mb4;")
-            .Should().NotBeNull("an unnamed schema could resolve to anything");
-    }
-
-    [Theory]
-    [InlineData("utf8")]
-    [InlineData("latin1")]
-    public void AConnectionThatIsNotUtf8mb4_IsRejected(string charset)
-    {
-        // utf8 is 3-byte in MySQL and silently truncates 4-byte characters. The Urdu
-        // round-trip tests would pass while production data was being mangled.
-        var reason = TestDatabase.Reject(
-            $"Server=localhost;Database=moeez_test;User ID=root;Password=;CharSet={charset};");
-
-        reason.Should().NotBeNull();
-        reason.Should().Contain("utf8mb4");
+        TestDatabase.Reject("Server=.\\MSSQLSERVER2012;User Id=Electronic;Password=x;")
+            .Should().NotBeNull("an unnamed database could resolve to anything");
     }
 }

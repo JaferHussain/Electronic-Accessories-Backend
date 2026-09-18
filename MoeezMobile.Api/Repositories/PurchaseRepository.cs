@@ -1,4 +1,5 @@
 using Dapper;
+using Microsoft.Data.SqlClient;
 using MoeezMobile.Api.Data;
 using MoeezMobile.Api.Helpers;
 using MoeezMobile.Api.Models.Common;
@@ -25,8 +26,8 @@ public class PurchaseRepository : IPurchaseRepository
         SELECT h.Id, h.InvoiceNo, h.PurchaseDate, h.SupplierId, s.Name AS SupplierName,
                h.SubTotal, h.Discount, h.TotalAmount, h.PaidAmount, h.Notes,
                h.IsVoided, u.FullName AS CreatedByName, h.CreatedAt,
-               IFNULL(i.LineCount, 0) AS ItemCount,
-               IFNULL(i.QtySum, 0)    AS TotalQuantity
+               ISNULL(i.LineCount, 0) AS ItemCount,
+               ISNULL(i.QtySum, 0)    AS TotalQuantity
         FROM Purchases h
         LEFT JOIN Suppliers s ON s.Id = h.SupplierId
         LEFT JOIN Users     u ON u.Id = h.CreatedBy
@@ -60,7 +61,7 @@ public class PurchaseRepository : IPurchaseRepository
             {HeaderProjection}
             {whereSql}
             ORDER BY h.PurchaseDate DESC, h.Id DESC
-            LIMIT @Take OFFSET @Skip;
+            OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;
 
             SELECT COUNT(*) FROM Purchases h {whereSql};";
 
@@ -113,7 +114,7 @@ public class PurchaseRepository : IPurchaseRepository
         var purchaseDate = (dto.PurchaseDate ?? DateTime.Today).Date;
 
         await using var conn = await _factory.CreateOpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
         try
         {
             var invoiceNo = await InvoiceNumberGenerator.NextDailyAsync(conn, tx, "PUR", purchaseDate);
@@ -125,7 +126,7 @@ public class PurchaseRepository : IPurchaseRepository
                 VALUES
                     (@InvoiceNo, @SupplierId, @PurchaseDate, 0, @Discount, 0,
                      @PaidAmount, @Notes, 0, @UserId);
-                SELECT LAST_INSERT_ID();",
+                SELECT CAST(SCOPE_IDENTITY() AS INT);",
                 new
                 {
                     InvoiceNo = invoiceNo,
@@ -168,7 +169,7 @@ public class PurchaseRepository : IPurchaseRepository
                 await conn.ExecuteAsync(@"
                     INSERT INTO StockLedger
                         (ProductId, TxnType, ReferenceId, ReferenceNo, QtyIn, QtyOut, BalanceAfter, Notes)
-                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, @QtyIn, 0, @Balance, 'خریداری');",
+                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, @QtyIn, 0, @Balance, N'خریداری');",
                     new
                     {
                         item.ProductId,
@@ -182,9 +183,10 @@ public class PurchaseRepository : IPurchaseRepository
 
             // Totals are recalculated from the stored lines, never trusted from the client.
             await conn.ExecuteAsync(@"
-                UPDATE Purchases h
-                SET h.SubTotal    = (SELECT IFNULL(SUM(LineTotal), 0) FROM PurchaseItems WHERE PurchaseId = h.Id),
-                    h.TotalAmount = (SELECT IFNULL(SUM(LineTotal), 0) FROM PurchaseItems WHERE PurchaseId = h.Id) - h.Discount
+                UPDATE h
+                SET SubTotal    = (SELECT ISNULL(SUM(LineTotal), 0) FROM PurchaseItems WHERE PurchaseId = h.Id),
+                    TotalAmount = (SELECT ISNULL(SUM(LineTotal), 0) FROM PurchaseItems WHERE PurchaseId = h.Id) - h.Discount
+                FROM Purchases h
                 WHERE h.Id = @Id;", new { Id = purchaseId }, tx);
 
             await tx.CommitAsync();
@@ -204,11 +206,11 @@ public class PurchaseRepository : IPurchaseRepository
     public async Task VoidAsync(int id, int userId)
     {
         await using var conn = await _factory.CreateOpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+        await using var tx = (SqlTransaction)await conn.BeginTransactionAsync();
         try
         {
             var header = await conn.QuerySingleOrDefaultAsync<Purchase>(
-                "SELECT * FROM Purchases WHERE Id = @Id FOR UPDATE;", new { Id = id }, tx);
+                "SELECT * FROM Purchases WITH (UPDLOCK, ROWLOCK) WHERE Id = @Id;", new { Id = id }, tx);
 
             if (header is null) throw new NotFoundException(MessageKeys.PurchaseNotFound);
             if (header.IsVoided) throw new BusinessException(MessageKeys.AlreadyVoided);
@@ -235,7 +237,7 @@ public class PurchaseRepository : IPurchaseRepository
                 await conn.ExecuteAsync(@"
                     INSERT INTO StockLedger
                         (ProductId, TxnType, ReferenceId, ReferenceNo, QtyIn, QtyOut, BalanceAfter, Notes)
-                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, 0, @QtyOut, @Balance, 'خریداری منسوخ');",
+                    VALUES (@ProductId, @TxnType, @ReferenceId, @ReferenceNo, 0, @QtyOut, @Balance, N'خریداری منسوخ');",
                     new
                     {
                         item.ProductId,

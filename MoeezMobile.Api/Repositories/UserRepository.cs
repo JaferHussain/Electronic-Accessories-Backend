@@ -28,7 +28,7 @@ public class UserRepository : IUserRepository
     {
         await using var conn = await _factory.CreateOpenConnectionAsync();
         return await conn.QuerySingleOrDefaultAsync<User>(
-            $"SELECT {SelectColumns} FROM Users WHERE Username = @Username LIMIT 1;",
+            $"SELECT TOP (1) {SelectColumns} FROM Users WHERE Username = @Username;",
             new { Username = username });
     }
 
@@ -53,7 +53,7 @@ public class UserRepository : IUserRepository
         return await conn.ExecuteScalarAsync<int>(@"
             INSERT INTO Users (Username, FullName, PasswordHash, Role, IsActive)
             VALUES (@Username, @FullName, @PasswordHash, @Role, 1);
-            SELECT LAST_INSERT_ID();",
+            SELECT CAST(SCOPE_IDENTITY() AS INT);",
             new { Username = username, FullName = fullName, PasswordHash = passwordHash, Role = role });
     }
 
@@ -62,9 +62,9 @@ public class UserRepository : IUserRepository
         await using var conn = await _factory.CreateOpenConnectionAsync();
         var affected = await conn.ExecuteAsync(@"
             UPDATE Users SET
-                FullName     = IFNULL(@FullName, FullName),
-                PasswordHash = IFNULL(@PasswordHash, PasswordHash),
-                Role         = IFNULL(@Role, Role),
+                FullName     = ISNULL(@FullName, FullName),
+                PasswordHash = ISNULL(@PasswordHash, PasswordHash),
+                Role         = ISNULL(@Role, Role),
                 IsActive     = @IsActive
             WHERE Id = @Id;",
             new { Id = id, FullName = fullName, PasswordHash = passwordHash, Role = role, IsActive = isActive ? 1 : 0 });

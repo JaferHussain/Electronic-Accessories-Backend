@@ -1,5 +1,5 @@
 using MoeezMobile.Api.Data;
-using MySqlConnector;
+using Microsoft.Data.SqlClient;
 
 namespace MoeezMobile.Api.Tests.Integration;
 
@@ -8,7 +8,7 @@ namespace MoeezMobile.Api.Tests.Integration;
 ///
 /// Every test that touches data uses this. There are no in-memory repository substitutes in
 /// this suite: a fake agrees with whatever the fake's author believed, while the duplicate
-/// database agrees with MySQL. Locking, collation, rounding on write, and rollback are only
+/// database agrees with SQL Server. Locking, collation, rounding on write, and rollback are only
 /// real against a real server.
 /// </summary>
 public class DatabaseFixture : IAsyncLifetime
@@ -48,8 +48,8 @@ public class DatabaseFixture : IAsyncLifetime
     {
         Assert.SkipWhen(
             !IsAvailable,
-            $"SKIPPED — integration tier needs MySQL. {UnavailableReason} "
-            + $"Start MySQL, or set {TestDatabase.ConnectionEnvVar} to a duplicate database "
+            $"SKIPPED — integration tier needs SQL Server. {UnavailableReason} "
+            + $"Start SQL Server, or set {TestDatabase.ConnectionEnvVar} to a duplicate database "
             + $"named 'moeez_test'.");
     }
 
@@ -60,7 +60,7 @@ public class DatabaseFixture : IAsyncLifetime
         await TestDatabase.ResetAsync();
     }
 
-    public Task<MySqlConnection> OpenAsync() => TestDatabase.OpenAsync();
+    public Task<SqlConnection> OpenAsync() => TestDatabase.OpenAsync();
 
     /// <summary>
     /// Connection factory pointed at the duplicate database, so the real repository classes
@@ -70,11 +70,11 @@ public class DatabaseFixture : IAsyncLifetime
 
     private sealed class TestConnectionFactory : IDbConnectionFactory
     {
-        public MySqlConnection CreateConnection() => new(TestDatabase.ConnectionString);
+        public SqlConnection CreateConnection() => new(TestDatabase.ConnectionString);
 
-        public async Task<MySqlConnection> CreateOpenConnectionAsync(CancellationToken ct = default)
+        public async Task<SqlConnection> CreateOpenConnectionAsync(CancellationToken ct = default)
         {
-            var conn = new MySqlConnection(TestDatabase.ConnectionString);
+            var conn = new SqlConnection(TestDatabase.ConnectionString);
             await conn.OpenAsync(ct);
             return conn;
         }

@@ -27,24 +27,26 @@ public class DashboardRepository : IDashboardRepository
         const string sql = @"
             SELECT COUNT(*) FROM Products WHERE IsActive = 1;
 
-            SELECT IFNULL(SUM(QuantityInStock), 0) FROM Products WHERE IsActive = 1;
+            SELECT ISNULL(SUM(QuantityInStock), 0) FROM Products WHERE IsActive = 1;
 
-            SELECT IFNULL(SUM(QuantityInStock * PurchasePrice), 0) FROM Products WHERE IsActive = 1;
+            SELECT ISNULL(SUM(QuantityInStock * PurchasePrice), 0) FROM Products WHERE IsActive = 1;
 
-            SELECT IFNULL(SUM(TotalAmount), 0) FROM Purchases
-             WHERE PurchaseDate = CURDATE() AND IsVoided = 0;
+            SELECT ISNULL(SUM(TotalAmount), 0) FROM Purchases
+             WHERE PurchaseDate = CAST(GETDATE() AS DATE) AND IsVoided = 0;
 
-            SELECT IFNULL(SUM(TotalAmount), 0) FROM Sales
-             WHERE SaleDate = CURDATE() AND IsVoided = 0;
+            SELECT ISNULL(SUM(TotalAmount), 0) FROM Sales
+             WHERE SaleDate = CAST(GETDATE() AS DATE) AND IsVoided = 0;
 
-            SELECT IFNULL(SUM(TotalProfit), 0) FROM Sales
-             WHERE SaleDate = CURDATE() AND IsVoided = 0;
+            SELECT ISNULL(SUM(TotalProfit), 0) FROM Sales
+             WHERE SaleDate = CAST(GETDATE() AS DATE) AND IsVoided = 0;
 
-            SELECT IFNULL(SUM(TotalAmount), 0) FROM Sales
-             WHERE DATE_FORMAT(SaleDate, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m') AND IsVoided = 0;
+            SELECT ISNULL(SUM(TotalAmount), 0) FROM Sales
+             WHERE YEAR(SaleDate) = YEAR(GETDATE()) AND MONTH(SaleDate) = MONTH(GETDATE())
+               AND IsVoided = 0;
 
-            SELECT IFNULL(SUM(TotalProfit), 0) FROM Sales
-             WHERE DATE_FORMAT(SaleDate, '%Y-%m') = DATE_FORMAT(CURDATE(), '%Y-%m') AND IsVoided = 0;
+            SELECT ISNULL(SUM(TotalProfit), 0) FROM Sales
+             WHERE YEAR(SaleDate) = YEAR(GETDATE()) AND MONTH(SaleDate) = MONTH(GETDATE())
+               AND IsVoided = 0;
 
             SELECT COUNT(*) FROM Products
              WHERE IsActive = 1 AND QuantityInStock <= LowStockThreshold;";
@@ -76,7 +78,7 @@ public class DashboardRepository : IDashboardRepository
             LEFT JOIN Brands b ON b.Id = p.BrandId
             WHERE p.IsActive = 1 AND p.QuantityInStock <= p.LowStockThreshold
             ORDER BY p.QuantityInStock, p.Name
-            LIMIT @Take;", new { Take = Math.Clamp(take, 1, 200) });
+            OFFSET 0 ROWS FETCH NEXT @Take ROWS ONLY;", new { Take = Math.Clamp(take, 1, 200) });
         return rows.ToList();
     }
 
@@ -85,12 +87,12 @@ public class DashboardRepository : IDashboardRepository
         await using var conn = await _factory.CreateOpenConnectionAsync();
         var rows = await conn.QueryAsync<RecentSaleDto>(@"
             SELECT h.Id, h.InvoiceNo, h.SaleDate, h.CreatedAt, h.CustomerName,
-                   IFNULL((SELECT SUM(Quantity) FROM SaleItems WHERE SaleId = h.Id), 0) AS TotalQuantity,
+                   ISNULL((SELECT SUM(Quantity) FROM SaleItems WHERE SaleId = h.Id), 0) AS TotalQuantity,
                    h.TotalAmount, h.TotalProfit
             FROM Sales h
             WHERE h.IsVoided = 0
             ORDER BY h.Id DESC
-            LIMIT @Take;", new { Take = Math.Clamp(take, 1, 200) });
+            OFFSET 0 ROWS FETCH NEXT @Take ROWS ONLY;", new { Take = Math.Clamp(take, 1, 200) });
         return rows.ToList();
     }
 
@@ -110,8 +112,8 @@ public class DashboardRepository : IDashboardRepository
                    COUNT(*)         AS InvoiceCount
             FROM Sales
             WHERE IsVoided = 0
-              AND SaleDate > DATE_SUB(CURDATE(), INTERVAL @Days DAY)
-              AND SaleDate <= CURDATE()
+              AND SaleDate > DATEADD(DAY, -@Days, CAST(GETDATE() AS DATE))
+              AND SaleDate <= CAST(GETDATE() AS DATE)
             GROUP BY SaleDate;", new { Days = days })).ToDictionary(r => r.Date.Date);
 
         var today = DateTime.Today;
