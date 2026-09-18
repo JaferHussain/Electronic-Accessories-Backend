@@ -1,0 +1,58 @@
+name: CI & Deploy
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+concurrency:
+  group: deploy-backend
+  cancel-in-progress: false
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET 10
+        run: |
+          curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
+          echo "$HOME/.dotnet" >> $GITHUB_PATH
+
+      - name: Restore
+        run: dotnet restore MoeezMobile.sln
+
+      - name: Build
+        run: dotnet build MoeezMobile.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test MoeezMobile.sln -c Release --no-build
+
+  deploy:
+    needs: build-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install .NET 10
+        run: |
+          curl -sSL https://dot.net/v1/dotnet-install.sh | bash -s -- --channel 10.0
+          echo "$HOME/.dotnet" >> $GITHUB_PATH
+
+      - name: Publish
+        run: dotnet publish MoeezMobile.Api/MoeezMobile.Api.csproj -c Release -o ./publish
+
+      - name: Deploy via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_HOST }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./publish/
+          server-dir: ${{ secrets.FTP_TARGET_PATH }}
